@@ -36,6 +36,8 @@ class ExcelFileEditor(
 
     override fun getName(): String = "Excel"
 
+    override fun getFile(): VirtualFile = file
+
     override fun setState(state: FileEditorState) = Unit
 
     override fun isModified(): Boolean = false
