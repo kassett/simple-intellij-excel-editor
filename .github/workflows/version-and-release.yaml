@@ -113,6 +113,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
+          owner: kassett
+          repositories: simple-intellij-excel-editor
           app-id: ${{ secrets.KASSETT_PR_BOT_APP_ID }}
           private-key: ${{ secrets.KASSETT_PR_BOT_PRIVATE_KEY }}
 
