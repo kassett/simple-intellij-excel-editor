@@ -31,6 +31,67 @@ class WorkbookDocument private constructor(
         snapshot.sheets[sheetIndex].setCell(rowIndex, columnIndex, value)
     }
 
+    fun insertRow(
+        sheetIndex: Int,
+        rowIndex: Int,
+    ) {
+        val sheet = workbook.getSheetAt(sheetIndex)
+        val lastRow = sheet.lastRowNum
+        if (rowIndex <= lastRow) {
+            sheet.shiftRows(rowIndex, lastRow, 1, true, false)
+        }
+        sheet.createRow(rowIndex)
+        snapshot.sheets[sheetIndex].insertRow(rowIndex)
+    }
+
+    fun deleteRow(
+        sheetIndex: Int,
+        rowIndex: Int,
+    ) {
+        val sheet = workbook.getSheetAt(sheetIndex)
+        val row = sheet.getRow(rowIndex)
+        if (row != null) {
+            sheet.removeRow(row)
+        }
+
+        if (rowIndex < sheet.lastRowNum) {
+            sheet.shiftRows(rowIndex + 1, sheet.lastRowNum, -1, true, false)
+        }
+        snapshot.sheets[sheetIndex].deleteRow(rowIndex)
+    }
+
+    fun insertColumn(
+        sheetIndex: Int,
+        columnIndex: Int,
+    ) {
+        val sheet = workbook.getSheetAt(sheetIndex)
+        sheet.rowIterator().forEach { row ->
+            val lastCellIndex = row.lastCellNum.toIntOrZero()
+            if (columnIndex <= lastCellIndex) {
+                row.shiftCellsRight(columnIndex, lastCellIndex, 1)
+            }
+        }
+        snapshot.sheets[sheetIndex].insertColumn(columnIndex)
+    }
+
+    fun deleteColumn(
+        sheetIndex: Int,
+        columnIndex: Int,
+    ) {
+        val sheet = workbook.getSheetAt(sheetIndex)
+        sheet.rowIterator().forEach { row ->
+            val cell = row.getCell(columnIndex)
+            if (cell != null) {
+                row.removeCell(cell)
+            }
+
+            if (columnIndex < row.lastCellNum.toIntOrZero()) {
+                row.shiftCellsLeft(columnIndex + 1, row.lastCellNum.toIntOrZero(), 1)
+            }
+        }
+        snapshot.sheets[sheetIndex].deleteColumn(columnIndex)
+    }
+
     fun writeToBytes(): ByteArray =
         ByteArrayOutputStream().use { output ->
             workbook.write(output)

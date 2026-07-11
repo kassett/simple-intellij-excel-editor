@@ -41,6 +41,67 @@ class WorkbookDocumentTest {
         }
     }
 
+    @Test
+    fun `inserts and deletes rows`() {
+        val updatedBytes =
+            WorkbookDocument.load(ByteArrayInputStream(testWorkbookBytes())).use { document ->
+                document.insertRow(sheetIndex = 0, rowIndex = 1)
+                document.updateCell(sheetIndex = 0, rowIndex = 1, columnIndex = 0, value = "Inserted")
+                document.deleteRow(sheetIndex = 0, rowIndex = 2)
+                document.writeToBytes()
+            }
+
+        WorkbookFactory.create(ByteArrayInputStream(updatedBytes)).use { workbook ->
+            assertEquals(
+                "Inserted",
+                workbook
+                    .getSheet("Data")
+                    .getRow(1)
+                    .getCell(0)
+                    .stringCellValue,
+            )
+            assertEquals(1, workbook.getSheet("Data").lastRowNum)
+        }
+    }
+
+    @Test
+    fun `inserts and deletes columns`() {
+        val updatedBytes =
+            WorkbookDocument.load(ByteArrayInputStream(testWorkbookBytes())).use { document ->
+                document.insertColumn(sheetIndex = 0, columnIndex = 1)
+                document.updateCell(sheetIndex = 0, rowIndex = 0, columnIndex = 1, value = "Inserted")
+                document.deleteColumn(sheetIndex = 0, columnIndex = 2)
+                document.writeToBytes()
+            }
+
+        WorkbookFactory.create(ByteArrayInputStream(updatedBytes)).use { workbook ->
+            assertEquals(
+                "Name",
+                workbook
+                    .getSheet("Data")
+                    .getRow(0)
+                    .getCell(0)
+                    .stringCellValue,
+            )
+            assertEquals(
+                "Inserted",
+                workbook
+                    .getSheet("Data")
+                    .getRow(0)
+                    .getCell(1)
+                    .stringCellValue,
+            )
+            assertEquals(
+                "Widgets",
+                workbook
+                    .getSheet("Data")
+                    .getRow(1)
+                    .getCell(0)
+                    .stringCellValue,
+            )
+        }
+    }
+
     private fun testWorkbookBytes(): ByteArray =
         ByteArrayOutputStream().use { output ->
             XSSFWorkbook().use { workbook ->
