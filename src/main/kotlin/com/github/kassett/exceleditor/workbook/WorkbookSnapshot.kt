@@ -8,5 +8,17 @@ data class SheetSnapshot(
     val name: String,
     val rowCount: Int,
     val columnCount: Int,
-    val cells: Map<Pair<Int, Int>, String>,
-)
+    val cells: MutableMap<Pair<Int, Int>, String>,
+) {
+    fun setCell(
+        rowIndex: Int,
+        columnIndex: Int,
+        value: String,
+    ) {
+        if (value.isBlank()) {
+            cells.remove(rowIndex to columnIndex)
+        } else {
+            cells[rowIndex to columnIndex] = value
+        }
+    }
+}
