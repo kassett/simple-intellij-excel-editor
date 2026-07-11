@@ -1,0 +1,237 @@
+name: version and release
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rc-plugin:
+    name: rc plugin
+    runs-on: ubuntu-latest
+    environment: jetbrains-marketplace
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.title != 'Version Apps'
+      )
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v20
+
+      - name: Install PNPM dependencies
+        run: nix develop -c pnpm install --frozen-lockfile
+
+      - name: Calculate RC version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          nix develop -c npx changeset status --output=/tmp/release-plan.json
+
+          VERSION=$(
+            nix develop -c jq -r '.releases[].newVersion' /tmp/release-plan.json
+          )
+
+          echo "version=${VERSION}-rc.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and verify RC plugin
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          nix develop -c ./gradlew \
+            clean \
+            check \
+            verifyPlugin \
+            buildPlugin
+
+      - name: Sign RC plugin
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+          CERTIFICATE_CHAIN: ${{ secrets.PLUGIN_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PLUGIN_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PLUGIN_PRIVATE_KEY_PASSWORD }}
+        run: nix develop -c ./gradlew signPlugin
+
+      - name: Upload RC plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: intellij-excel-editor-${{ steps.version.outputs.version }}
+          path: build/distributions/*-signed.zip
+          if-no-files-found: error
+
+      - name: Publish RC plugin
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+          JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+          JETBRAINS_MARKETPLACE_CHANNEL: rc
+          CERTIFICATE_CHAIN: ${{ secrets.PLUGIN_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PLUGIN_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PLUGIN_PRIVATE_KEY_PASSWORD }}
+        run: nix develop -c ./gradlew publishPlugin
+
+  version-pr:
+    name: version apps pr
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.title != 'Version Apps'
+      )
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v20
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.KASSETT_PR_BOT_APP_ID }}
+          private-key: ${{ secrets.KASSETT_PR_BOT_PRIVATE_KEY }}
+
+      - name: Install PNPM dependencies
+        run: nix develop -c pnpm install --frozen-lockfile
+
+      - name: Version plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          nix develop -c pnpm changeset version
+
+          VERSION=$(
+            nix develop -c node -p "require('./package.json').version"
+          )
+
+          GRADLE_VERSION=$(
+            nix develop -c ./gradlew properties --console=plain |
+              sed -n 's/^version: //p' |
+              head -n 1
+          )
+
+          test "$VERSION" = "$GRADLE_VERSION"
+
+      - name: Create or update Version Apps PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: changeset-release-main
+          sign-commits: true
+          commit-message: Version apps
+          title: Version Apps
+          body: Automated PR to version the IntelliJ plugin from Changesets.
+
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    environment: jetbrains-marketplace
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.title == 'Version Apps'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v20
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.KASSETT_PR_BOT_APP_ID }}
+          private-key: ${{ secrets.KASSETT_PR_BOT_PRIVATE_KEY }}
+
+      - name: Read stable version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION=$(
+            nix develop -c node -p "require('./package.json').version"
+          )
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Gradle version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION=$(
+            nix develop -c node -p "require('./package.json').version"
+          )
+
+          GRADLE_VERSION=$(
+            nix develop -c ./gradlew properties --console=plain |
+              sed -n 's/^version: //p' |
+              head -n 1
+          )
+
+          test "$VERSION" = "$GRADLE_VERSION"
+
+      - name: Build and verify stable plugin
+        run: |
+          nix develop -c ./gradlew \
+            clean \
+            check \
+            verifyPlugin \
+            buildPlugin
+
+      - name: Sign stable plugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.PLUGIN_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PLUGIN_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PLUGIN_PRIVATE_KEY_PASSWORD }}
+        run: nix develop -c ./gradlew signPlugin
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: build/distributions/*-signed.zip
+
+      - name: Publish stable plugin
+        env:
+          JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+          JETBRAINS_MARKETPLACE_CHANNEL: default
+          CERTIFICATE_CHAIN: ${{ secrets.PLUGIN_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PLUGIN_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PLUGIN_PRIVATE_KEY_PASSWORD }}
+        run: nix develop -c ./gradlew publishPlugin

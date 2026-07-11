@@ -1,0 +1,116 @@
+name: ci
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v20
+
+      - name: Fetch main branch
+        run: git fetch origin main:main
+
+      - name: Check source changes
+        id: source-changes
+        uses: tj-actions/changed-files@v46
+        with:
+          files: |
+            .github/**
+            src/**
+            build.gradle.kts
+            settings.gradle.kts
+            gradle.properties
+            gradle/**
+            gradlew
+            gradlew.bat
+            flake.lock
+            flake.nix
+            package.json
+            pnpm-lock.yaml
+
+      - name: Check changeset changes
+        id: changeset-changes
+        uses: tj-actions/changed-files@v46
+        with:
+          files: |
+            .changeset/**
+
+      - name: Require changeset
+        if: github.event.pull_request.title != 'Version Apps'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ${{ steps.source-changes.outputs.any_modified == 'true' && steps.changeset-changes.outputs.any_modified == 'false' }}; then
+            echo "Source changes require a changeset. Run 'pnpm changeset' and commit the generated .changeset file."
+            exit 1
+          fi
+
+      - name: Install PNPM dependencies
+        run: nix develop -c pnpm install --frozen-lockfile
+
+      - name: Check changeset status
+        if: github.event.pull_request.title != 'Version Apps'
+        run: nix develop -c pnpm changeset status --since=origin/main
+
+      - name: Check formatting
+        run: nix develop -c ./gradlew spotlessCheck
+
+      - name: Compile and test
+        run: nix develop -c ./gradlew check
+
+      - name: Validate plugin project
+        run: nix develop -c ./gradlew verifyPluginProjectConfiguration
+
+      - name: Validate plugin archive structure
+        run: nix develop -c ./gradlew verifyPluginStructure
+
+  plugin-verifier:
+    name: plugin verifier
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v20
+
+      - name: Verify binary compatibility
+        run: nix develop -c ./gradlew verifyPlugin
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v20
+
+      - name: Build plugin
+        run: nix develop -c ./gradlew buildPlugin
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: intellij-excel-editor
+          path: build/distributions/*.zip
+          if-no-files-found: error
