@@ -5,13 +5,15 @@
 
     <description>
         <![CDATA[
-        Opens Excel workbooks in a read-only IntelliJ editor tab.
+        Opens Excel workbooks in an IntelliJ editor tab backed by AG Grid.
         ]]>
     </description>
 
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <fileEditorProvider implementation="com.github.kassett.exceleditor.editor.ExcelFileEditorProvider"/>
+        <fileEditorProvider
+            implementation="com.github.kassett.exceleditor.editor.ExcelFileEditorProvider"
+            order="first"/>
     </extensions>
 </idea-plugin>

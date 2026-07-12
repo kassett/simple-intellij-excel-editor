@@ -3,39 +3,32 @@ package com.github.kassett.exceleditor.editor
 import com.github.kassett.exceleditor.workbook.SheetSnapshot
 import com.github.kassett.exceleditor.workbook.WorkbookDocument
 import com.github.kassett.exceleditor.workbook.WorkbookSnapshot
+import com.google.gson.Gson
+import com.google.gson.JsonParser
+import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorLocation
 import com.intellij.openapi.fileEditor.FileEditorState
 import com.intellij.openapi.fileEditor.FileEditorStateLevel
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBPanel
-import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTabbedPane
-import com.intellij.ui.table.JBTable
+import com.intellij.ui.jcef.JBCefApp
+import com.intellij.ui.jcef.JBCefBrowser
+import com.intellij.ui.jcef.JBCefBrowserBase
+import com.intellij.ui.jcef.JBCefJSQuery
+import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Color
-import java.awt.Component
-import java.awt.Dimension
-import java.awt.FlowLayout
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.beans.PropertyChangeEvent
 import java.beans.PropertyChangeListener
 import java.beans.PropertyChangeSupport
-import javax.swing.JButton
 import javax.swing.JComponent
-import javax.swing.JMenuItem
 import javax.swing.JPanel
-import javax.swing.JPopupMenu
-import javax.swing.JTable
-import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
-import javax.swing.table.AbstractTableModel
-import javax.swing.table.DefaultTableCellRenderer
-import javax.swing.table.TableCellRenderer
 
 class ExcelFileEditor(
     private val file: VirtualFile,
@@ -43,23 +36,29 @@ class ExcelFileEditor(
     FileEditor {
     private val root = JPanel(BorderLayout())
     private val propertyChangeSupport = PropertyChangeSupport(this)
+    private val gson = Gson()
     private var document: WorkbookDocument? = null
+    private var browser: JBCefBrowser? = null
+    private var bridgeQuery: JBCefJSQuery? = null
     private var modified = false
-    private var workbookComponent: JComponent? = null
-    private var selectedSheetIndex = 0
-    private var selectedRowIndex = 0
-    private var selectedColumnIndex = 0
-    private var restoreButton: JButton? = null
-    private var saveButton: JButton? = null
+    private val lafListener =
+        LafManagerListener {
+            applyThemeToBrowser()
+        }
 
     init {
         root.add(JBLabel("Loading workbook..."), BorderLayout.CENTER)
-        loadWorkbook()
+        ApplicationManager
+            .getApplication()
+            .messageBus
+            .connect(this)
+            .subscribe(LafManagerListener.TOPIC, lafListener)
+        loadWorkbook(recreateBrowser = true)
     }
 
     override fun getComponent(): JComponent = root
 
-    override fun getPreferredFocusedComponent(): JComponent = root
+    override fun getPreferredFocusedComponent(): JComponent = browser?.component ?: root
 
     override fun getName(): String = "Excel"
 
@@ -84,11 +83,12 @@ class ExcelFileEditor(
     override fun getCurrentLocation(): FileEditorLocation? = null
 
     override fun dispose() {
+        disposeBrowser()
         document?.close()
         document = null
     }
 
-    private fun loadWorkbook() {
+    private fun loadWorkbook(recreateBrowser: Boolean) {
         ApplicationManager.getApplication().executeOnPooledThread {
             val result =
                 runCatching {
@@ -96,199 +96,115 @@ class ExcelFileEditor(
                 }
 
             SwingUtilities.invokeLater {
-                root.removeAll()
-                root.add(
-                    result.fold(
-                        onSuccess = { loadedDocument ->
-                            document = loadedDocument
-                            runCatching {
-                                createWorkbookComponent(loadedDocument.snapshot)
-                            }.getOrElse(::errorComponent)
-                        },
-                        onFailure = ::errorComponent,
-                    ),
-                    BorderLayout.CENTER,
+                result.fold(
+                    onSuccess = { loadedDocument ->
+                        document?.close()
+                        document = loadedDocument
+                        setModified(false)
+
+                        if (recreateBrowser || browser == null) {
+                            root.removeAll()
+                            root.add(createBrowserComponent(loadedDocument.snapshot), BorderLayout.CENTER)
+                            root.revalidate()
+                            root.repaint()
+                        } else {
+                            sendWorkbookToBrowser()
+                        }
+                    },
+                    onFailure = { error ->
+                        root.removeAll()
+                        root.add(errorComponent(error), BorderLayout.CENTER)
+                        root.revalidate()
+                        root.repaint()
+                    },
                 )
-                root.revalidate()
-                root.repaint()
             }
         }
     }
 
-    private fun createWorkbookComponent(workbook: WorkbookSnapshot): JComponent {
-        val panel = JBPanel<JBPanel<*>>(BorderLayout())
-        val toolbar = JBPanel<JBPanel<*>>(FlowLayout(FlowLayout.RIGHT))
-        val editable = file.extension.equals("xlsx", ignoreCase = true)
-
-        val restore = JButton("Restore")
-        restore.isEnabled = false
-        restore.addActionListener { restoreWorkbook() }
-        restoreButton = restore
-        toolbar.add(restore)
-
-        val save = JButton("Save")
-        save.isEnabled = false
-        save.addActionListener { saveWorkbook() }
-        saveButton = save
-        toolbar.add(save)
-        panel.add(toolbar, BorderLayout.NORTH)
-
-        val tabs = JBTabbedPane()
-        workbook.sheets.forEachIndexed { sheetIndex, sheet ->
-            val table = JBTable(SheetTableModel(sheet, ::updateCell, sheetIndex, editable))
-            table.autoResizeMode = JBTable.AUTO_RESIZE_OFF
-            table.tableHeader.defaultRenderer = SpreadsheetHeaderRenderer(table.tableHeader.defaultRenderer)
-            table.selectionModel.addListSelectionListener {
-                if (!it.valueIsAdjusting) {
-                    selectedSheetIndex = sheetIndex
-                    selectedRowIndex = maxOf(table.selectedRow, 0).toWorkbookRowIndex()
-                }
-            }
-            table.columnModel.selectionModel.addListSelectionListener {
-                if (!it.valueIsAdjusting) {
-                    selectedSheetIndex = sheetIndex
-                    selectedColumnIndex = maxOf(table.selectedColumn, 0)
-                }
-            }
-            if (editable) {
-                installColumnHeaderMenu(table, sheetIndex)
-            }
-
-            val scrollPane = JBScrollPane(table)
-            val rowHeader = JBTable(RowHeaderTableModel(sheet))
-            rowHeader.rowHeight = table.rowHeight
-            rowHeader.autoResizeMode = JBTable.AUTO_RESIZE_OFF
-            rowHeader.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
-            rowHeader.preferredScrollableViewportSize = Dimension(48, 0)
-            rowHeader.tableHeader = null
-            rowHeader.setDefaultRenderer(Any::class.java, SpreadsheetHeaderRenderer())
-            rowHeader.selectionModel.addListSelectionListener {
-                if (!it.valueIsAdjusting) {
-                    selectedSheetIndex = sheetIndex
-                    selectedRowIndex = maxOf(rowHeader.selectedRow, 0)
-                    if (rowHeader.selectedRow >= 0) {
-                        table.setRowSelectionInterval(rowHeader.selectedRow, rowHeader.selectedRow)
-                    }
-                }
-            }
-            if (editable) {
-                installRowHeaderMenu(rowHeader, sheetIndex)
-            }
-            scrollPane.setRowHeaderView(rowHeader)
-
-            tabs.addTab(sheet.name, scrollPane)
+    private fun createBrowserComponent(workbook: WorkbookSnapshot): JComponent {
+        if (!JBCefApp.isSupported()) {
+            return JBLabel("The Excel editor requires a JetBrains Runtime with JCEF support.")
         }
-        tabs.addChangeListener {
-            selectedSheetIndex = maxOf(tabs.selectedIndex, 0)
+
+        disposeBrowser()
+
+        val nextBrowser = JBCefBrowser()
+        val nextBridgeQuery = JBCefJSQuery.create(nextBrowser as JBCefBrowserBase)
+        nextBridgeQuery.addHandler { payload ->
+            handleBridgeMessage(payload)
+            null
         }
-        panel.add(tabs, BorderLayout.CENTER)
-        workbookComponent = panel
-        return panel
+
+        browser = nextBrowser
+        bridgeQuery = nextBridgeQuery
+
+        val html =
+            webAppHtml()
+                .replace("/*__INTELLIJ_BRIDGE__*/", bridgeScript(nextBridgeQuery))
+                .replace("/*__INITIAL_WORKBOOK__*/", "window.initialWorkbook = ${workbook.toGridModel().toJson()};")
+                .replace("/*__INITIAL_EDITABLE__*/", "window.initialEditable = $isEditable;")
+                .replace("/*__INITIAL_THEME__*/", "window.initialTheme = ${currentTheme().toJson()};")
+
+        nextBrowser.loadHTML(html, WEB_APP_URL)
+        nextBrowser.setPageBackgroundColor(currentTheme().background)
+        return nextBrowser.component
     }
 
-    private fun errorComponent(error: Throwable): JComponent =
-        JBLabel("Unable to read workbook: ${error.message ?: error::class.simpleName}")
+    private fun handleBridgeMessage(payload: String) {
+        val message =
+            runCatching {
+                JsonParser.parseString(payload).asJsonObject
+            }.getOrNull() ?: return
 
-    private fun updateCell(
-        sheetIndex: Int,
-        rowIndex: Int,
-        columnIndex: Int,
-        value: String,
-    ) {
-        document?.updateCell(sheetIndex, rowIndex.toWorkbookRowIndex(), columnIndex, value)
-        setModified(true)
+        when (message["action"].asString) {
+            "cellChanged" -> {
+                document?.updateCell(
+                    sheetIndex = message["sheetIndex"].asInt,
+                    rowIndex = message["rowIndex"].asInt,
+                    columnIndex = message["columnIndex"].asInt,
+                    value = message["value"]?.asString.orEmpty(),
+                )
+                setModifiedOnEdt(true)
+            }
+            "insertRow" -> {
+                document?.insertRow(
+                    sheetIndex = message["sheetIndex"].asInt,
+                    rowIndex = message["rowIndex"].asInt,
+                )
+                setModifiedAndReload()
+            }
+            "deleteRow" -> {
+                document?.deleteRow(
+                    sheetIndex = message["sheetIndex"].asInt,
+                    rowIndex = message["rowIndex"].asInt,
+                )
+                setModifiedAndReload()
+            }
+            "insertColumn" -> {
+                document?.insertColumn(
+                    sheetIndex = message["sheetIndex"].asInt,
+                    columnIndex = message["columnIndex"].asInt,
+                )
+                setModifiedAndReload()
+            }
+            "deleteColumn" -> {
+                document?.deleteColumn(
+                    sheetIndex = message["sheetIndex"].asInt,
+                    columnIndex = message["columnIndex"].asInt,
+                )
+                setModifiedAndReload()
+            }
+            "save" -> saveWorkbook()
+            "restore" -> restoreWorkbook()
+        }
     }
 
-    private fun alterWorkbook(alteration: WorkbookDocument.(Int) -> Unit) {
-        val currentDocument = document ?: return
-        currentDocument.alteration(selectedSheetIndex)
-        setModified(true)
-        reloadCurrentDocument()
-    }
-
-    private fun installColumnHeaderMenu(
-        table: JBTable,
-        sheetIndex: Int,
-    ) {
-        table.tableHeader.addMouseListener(
-            object : MouseAdapter() {
-                override fun mousePressed(event: MouseEvent) = maybeShowColumnMenu(event)
-
-                override fun mouseReleased(event: MouseEvent) = maybeShowColumnMenu(event)
-
-                private fun maybeShowColumnMenu(event: MouseEvent) {
-                    if (!event.isPopupTrigger) {
-                        return
-                    }
-
-                    val columnIndex = table.columnAtPoint(event.point)
-                    if (columnIndex < 0) {
-                        return
-                    }
-
-                    selectedSheetIndex = sheetIndex
-                    selectedColumnIndex = columnIndex
-                    table.setColumnSelectionInterval(columnIndex, columnIndex)
-
-                    JPopupMenu()
-                        .addAction("Insert Column Left") {
-                            alterWorkbook { insertColumn(it, columnIndex) }
-                        }.addAction("Insert Column Right") {
-                            alterWorkbook { insertColumn(it, columnIndex + 1) }
-                        }.addAction("Delete Column") {
-                            alterWorkbook { deleteColumn(it, columnIndex) }
-                        }.show(event.component, event.x, event.y)
-                }
-            },
-        )
-    }
-
-    private fun installRowHeaderMenu(
-        rowHeader: JBTable,
-        sheetIndex: Int,
-    ) {
-        rowHeader.addMouseListener(
-            object : MouseAdapter() {
-                override fun mousePressed(event: MouseEvent) = maybeShowRowMenu(event)
-
-                override fun mouseReleased(event: MouseEvent) = maybeShowRowMenu(event)
-
-                private fun maybeShowRowMenu(event: MouseEvent) {
-                    if (!event.isPopupTrigger) {
-                        return
-                    }
-
-                    val rowIndex = rowHeader.rowAtPoint(event.point)
-                    if (rowIndex < 0) {
-                        return
-                    }
-
-                    selectedSheetIndex = sheetIndex
-                    selectedRowIndex = rowIndex.toWorkbookRowIndex()
-                    rowHeader.setRowSelectionInterval(rowIndex, rowIndex)
-
-                    JPopupMenu()
-                        .addAction("Insert Row Above") {
-                            alterWorkbook { insertRow(it, rowIndex.toWorkbookRowIndex()) }
-                        }.addAction("Insert Row Below") {
-                            alterWorkbook { insertRow(it, rowIndex.toWorkbookRowIndex() + 1) }
-                        }.addAction("Delete Row") {
-                            alterWorkbook { deleteRow(it, rowIndex.toWorkbookRowIndex()) }
-                        }.show(event.component, event.x, event.y)
-                }
-            },
-        )
-    }
-
-    private fun restoreWorkbook() {
-        document?.close()
-        document = null
-        setModified(false)
-        root.removeAll()
-        root.add(JBLabel("Loading workbook..."), BorderLayout.CENTER)
-        root.revalidate()
-        root.repaint()
-        loadWorkbook()
+    private fun setModifiedAndReload() {
+        setModifiedOnEdt(true)
+        SwingUtilities.invokeLater {
+            sendWorkbookToBrowser()
+        }
     }
 
     private fun saveWorkbook() {
@@ -296,21 +212,40 @@ class ExcelFileEditor(
         ApplicationManager.getApplication().runWriteAction {
             file.setBinaryContent(bytes)
         }
-        setModified(false)
+        setModifiedOnEdt(false)
     }
 
-    private fun reloadCurrentDocument() {
-        val currentDocument = document ?: return
-        val oldComponent = workbookComponent
-        val newComponent = createWorkbookComponent(currentDocument.snapshot)
-        if (oldComponent != null) {
-            root.remove(oldComponent)
+    private fun restoreWorkbook() {
+        loadWorkbook(recreateBrowser = false)
+    }
+
+    private fun sendWorkbookToBrowser() {
+        val workbook = document?.snapshot ?: return
+        browser?.runJavaScript(
+            "window.loadWorkbook(${workbook.toGridModel().toJson()}, $isEditable);",
+            WEB_APP_URL,
+            0,
+        )
+    }
+
+    private fun applyThemeToBrowser() {
+        val theme = currentTheme()
+        browser?.setPageBackgroundColor(theme.background)
+        browser?.runJavaScript(
+            "window.applyIntellijTheme(${theme.toJson()});",
+            WEB_APP_URL,
+            0,
+        )
+    }
+
+    private fun setModifiedOnEdt(nextModified: Boolean) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            setModified(nextModified)
         } else {
-            root.removeAll()
+            SwingUtilities.invokeLater {
+                setModified(nextModified)
+            }
         }
-        root.add(newComponent, BorderLayout.CENTER)
-        root.revalidate()
-        root.repaint()
     }
 
     private fun setModified(nextModified: Boolean) {
@@ -320,106 +255,85 @@ class ExcelFileEditor(
 
         val previousModified = modified
         modified = nextModified
-        restoreButton?.isEnabled = nextModified
-        saveButton?.isEnabled = nextModified
+        browser?.runJavaScript(
+            "window.setDirtyState($nextModified);",
+            WEB_APP_URL,
+            0,
+        )
         propertyChangeSupport.firePropertyChange(
             PropertyChangeEvent(this, FileEditor.getPropModified(), previousModified, nextModified),
         )
     }
 
-    private fun JPopupMenu.addAction(
-        label: String,
-        action: () -> Unit,
-    ): JPopupMenu {
-        val item = JMenuItem(label)
-        item.addActionListener { action() }
-        add(item)
-        return this
-    }
+    private fun errorComponent(error: Throwable): JComponent =
+        JBLabel("Unable to read workbook: ${error.message ?: error::class.simpleName}")
 
-    private fun Int.toWorkbookRowIndex(): Int = this + 1
-}
+    private fun webAppHtml(): String =
+        requireNotNull(javaClass.getResource("/web/excel-editor.html")) {
+            "Missing bundled Excel editor web app"
+        }.readText()
 
-private class SpreadsheetHeaderRenderer(
-    private val delegate: TableCellRenderer? = null,
-) : DefaultTableCellRenderer() {
-    override fun getTableCellRendererComponent(
-        table: JTable,
-        value: Any?,
-        isSelected: Boolean,
-        hasFocus: Boolean,
-        row: Int,
-        column: Int,
-    ): Component {
-        val component =
-            delegate?.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
-                ?: super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
+    private fun bridgeScript(query: JBCefJSQuery): String =
+        """
+        window.intellijBridge = function(message) {
+          ${query.inject("JSON.stringify(message)")}
+        };
+        """.trimIndent()
 
-        component.background = EXCEL_GREEN
-        component.foreground = Color.WHITE
-        if (component is DefaultTableCellRenderer) {
-            component.horizontalAlignment = CENTER
-        }
-        return component
-    }
+    private fun WorkbookSnapshot.toGridModel(): GridWorkbook =
+        GridWorkbook(
+            sheets =
+                sheets.mapIndexed { sheetIndex, sheet ->
+                    sheet.toGridSheet(sheetIndex)
+                },
+        )
 
-    companion object {
-        private val EXCEL_GREEN = Color(33, 115, 70)
-    }
-}
+    private fun SheetSnapshot.toGridSheet(sheetIndex: Int): GridSheet =
+        GridSheet(
+            index = sheetIndex,
+            name = name,
+            columns =
+                (0 until columnCount).map { columnIndex ->
+                    GridColumn(
+                        index = columnIndex,
+                        field = "c$columnIndex",
+                        headerName = cells[0 to columnIndex]?.takeIf { it.isNotBlank() } ?: columnName(columnIndex),
+                    )
+                },
+            rows =
+                (1 until rowCount).map { rowIndex ->
+                    GridRow(
+                        rowIndex = rowIndex,
+                        values =
+                            (0 until columnCount).associate { columnIndex ->
+                                "c$columnIndex" to cells[rowIndex to columnIndex].orEmpty()
+                            },
+                    )
+                },
+        )
 
-private class RowHeaderTableModel(
-    private val sheet: SheetSnapshot,
-) : AbstractTableModel() {
-    override fun getRowCount(): Int = maxOf(sheet.rowCount - 1, 0)
+    private fun Any.toJson(): String = gson.toJson(this)
 
-    override fun getColumnCount(): Int = 1
+    private fun currentTheme(): IntellijTheme =
+        IntellijTheme(
+            background = UIUtil.getTableBackground().toCssColor(),
+            foreground = UIUtil.getTableForeground().toCssColor(),
+            panel = UIUtil.getPanelBackground().toCssColor(),
+            panelForeground = UIUtil.getLabelForeground().toCssColor(),
+            border = JBColor.border().toCssColor(),
+            control = UIUtil.getControlColor().toCssColor(),
+            textField = UIUtil.getTextFieldBackground().toCssColor(),
+            textFieldForeground = UIUtil.getTextFieldForeground().toCssColor(),
+            selection = UIUtil.getTableSelectionBackground(true).toCssColor(),
+            selectionForeground = UIUtil.getTableSelectionForeground(true).toCssColor(),
+            disabledForeground = UIUtil.getLabelDisabledForeground().toCssColor(),
+            hover = JBColor.namedColor("List.hoverBackground", UIUtil.getTableBackground()).toCssColor(),
+            accent = JBColor.namedColor("Component.focusColor", Color(53, 116, 240)).toCssColor(),
+            header = JBColor.namedColor("TableHeader.background", UIUtil.getPanelBackground()).toCssColor(),
+            headerForeground = JBColor.namedColor("TableHeader.foreground", UIUtil.getLabelForeground()).toCssColor(),
+        )
 
-    override fun getValueAt(
-        rowIndex: Int,
-        columnIndex: Int,
-    ): Any = rowIndex + 2
-
-    override fun isCellEditable(
-        rowIndex: Int,
-        columnIndex: Int,
-    ): Boolean = false
-}
-
-private class SheetTableModel(
-    private val sheet: SheetSnapshot,
-    private val updateCell: (Int, Int, Int, String) -> Unit,
-    private val sheetIndex: Int,
-    private val editable: Boolean,
-) : AbstractTableModel() {
-    override fun getRowCount(): Int = maxOf(sheet.rowCount - 1, 0)
-
-    override fun getColumnCount(): Int = sheet.columnCount
-
-    override fun getColumnName(column: Int): String =
-        sheet.cells[0 to column]
-            ?.takeIf { it.isNotBlank() }
-            ?: columnName(column)
-
-    override fun getValueAt(
-        rowIndex: Int,
-        columnIndex: Int,
-    ): Any = sheet.cells[rowIndex + 1 to columnIndex].orEmpty()
-
-    override fun isCellEditable(
-        rowIndex: Int,
-        columnIndex: Int,
-    ): Boolean = editable
-
-    override fun setValueAt(
-        value: Any?,
-        rowIndex: Int,
-        columnIndex: Int,
-    ) {
-        val text = value?.toString().orEmpty()
-        updateCell(sheetIndex, rowIndex, columnIndex, text)
-        fireTableCellUpdated(rowIndex, columnIndex)
-    }
+    private fun Color.toCssColor(): String = "#%02x%02x%02x".format(red, green, blue)
 
     private fun columnName(index: Int): String {
         var value = index + 1
@@ -431,4 +345,58 @@ private class SheetTableModel(
         }
         return name.reverse().toString()
     }
+
+    private val isEditable: Boolean
+        get() = file.extension.equals("xlsx", ignoreCase = true)
+
+    private fun disposeBrowser() {
+        bridgeQuery?.let(Disposer::dispose)
+        bridgeQuery = null
+        browser?.let(Disposer::dispose)
+        browser = null
+    }
+
+    companion object {
+        private const val WEB_APP_URL = "https://excel-editor.local/index.html"
+    }
 }
+
+private data class GridWorkbook(
+    val sheets: List<GridSheet>,
+)
+
+private data class GridSheet(
+    val index: Int,
+    val name: String,
+    val columns: List<GridColumn>,
+    val rows: List<GridRow>,
+)
+
+private data class GridColumn(
+    val index: Int,
+    val field: String,
+    val headerName: String,
+)
+
+private data class GridRow(
+    val rowIndex: Int,
+    val values: Map<String, String>,
+)
+
+private data class IntellijTheme(
+    val background: String,
+    val foreground: String,
+    val panel: String,
+    val panelForeground: String,
+    val border: String,
+    val control: String,
+    val textField: String,
+    val textFieldForeground: String,
+    val selection: String,
+    val selectionForeground: String,
+    val disabledForeground: String,
+    val hover: String,
+    val accent: String,
+    val header: String,
+    val headerForeground: String,
+)
