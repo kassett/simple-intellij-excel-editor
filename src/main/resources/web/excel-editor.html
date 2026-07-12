@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Excel Editor</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-quartz.css" />
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+    <style>
+      :root {
+        --ij-background: #ffffff;
+        --ij-foreground: #1f2328;
+        --ij-panel: #f6f7f8;
+        --ij-panel-foreground: #1f2328;
+        --ij-border: #d6d6d6;
+        --ij-control: #f6f7f8;
+        --ij-text-field: #ffffff;
+        --ij-text-field-foreground: #1f2328;
+        --ij-selection: #3574f0;
+        --ij-selection-foreground: #ffffff;
+        --ij-disabled-foreground: #8a8f98;
+        --ij-hover: #edf3ff;
+        --ij-accent: #3574f0;
+        --ij-header: #f6f7f8;
+        --ij-header-foreground: #1f2328;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        color: var(--ij-foreground);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      body {
+        background: var(--ij-background);
+      }
+
+      button {
+        height: 28px;
+        padding: 0 12px;
+        border: 1px solid var(--ij-border);
+        border-radius: 4px;
+        background: var(--ij-control);
+        color: var(--ij-panel-foreground);
+        font: inherit;
+      }
+
+      button:hover:not(:disabled) {
+        background: var(--ij-hover);
+      }
+
+      button:disabled {
+        color: var(--ij-disabled-foreground);
+      }
+
+      #app {
+        display: flex;
+        height: 100%;
+        min-width: 0;
+        flex-direction: column;
+      }
+
+      .toolbar {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        height: 42px;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--ij-border);
+        background: var(--ij-panel);
+      }
+
+      .tabs {
+        display: flex;
+        min-width: 0;
+        gap: 4px;
+        overflow-x: auto;
+      }
+
+      .sheet-tab {
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .sheet-tab.active {
+        border-color: var(--ij-accent);
+        background: var(--ij-selection);
+        color: var(--ij-selection-foreground);
+      }
+
+      .actions {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 8px;
+      }
+
+      #grid {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
+      .ag-theme-quartz {
+        --ag-background-color: var(--ij-background);
+        --ag-foreground-color: var(--ij-foreground);
+        --ag-data-color: var(--ij-foreground);
+        --ag-border-color: var(--ij-border);
+        --ag-row-border-color: var(--ij-border);
+        --ag-secondary-border-color: var(--ij-border);
+        --ag-header-background-color: var(--ij-header);
+        --ag-header-foreground-color: var(--ij-header-foreground);
+        --ag-odd-row-background-color: var(--ij-background);
+        --ag-control-panel-background-color: var(--ij-panel);
+        --ag-subheader-background-color: var(--ij-panel);
+        --ag-modal-overlay-background-color: color-mix(in srgb, var(--ij-background) 86%, transparent);
+        --ag-input-background-color: var(--ij-text-field);
+        --ag-input-text-color: var(--ij-text-field-foreground);
+        --ag-selected-row-background-color: color-mix(in srgb, var(--ij-selection) 24%, transparent);
+        --ag-row-hover-color: var(--ij-hover);
+        --ag-range-selection-border-color: var(--ij-accent);
+        --ag-row-numbers-selected-color: var(--ij-accent);
+        --ag-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .ag-theme-quartz .ag-header,
+      .ag-theme-quartz .ag-header-row,
+      .ag-theme-quartz .ag-header-cell,
+      .ag-theme-quartz .ag-header-group-cell {
+        background: var(--ij-header);
+      }
+
+      .ag-header-cell,
+      .ag-header-group-cell {
+        color: var(--ij-header-foreground);
+      }
+
+      .ag-theme-quartz .ag-header-cell-text,
+      .ag-theme-quartz .ag-header-icon,
+      .ag-theme-quartz .ag-icon {
+        color: var(--ij-header-foreground);
+      }
+
+      .context-menu {
+        position: fixed;
+        z-index: 10;
+        min-width: 170px;
+        padding: 4px;
+        border: 1px solid var(--ij-border);
+        border-radius: 6px;
+        background: var(--ij-panel);
+        color: var(--ij-panel-foreground);
+        box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+      }
+
+      .context-menu button {
+        display: block;
+        width: 100%;
+        height: 30px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        text-align: left;
+      }
+
+      .context-menu button:hover {
+        background: var(--ij-hover);
+      }
+
+      .empty-state {
+        display: grid;
+        height: 100%;
+        place-items: center;
+        color: var(--ij-disabled-foreground);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="toolbar">
+        <div id="tabs" class="tabs"></div>
+        <div class="actions">
+          <button id="restoreButton" type="button" disabled>Restore</button>
+          <button id="saveButton" type="button" disabled>Save</button>
+        </div>
+      </div>
+      <div id="grid" class="ag-theme-quartz"></div>
+    </div>
+    <div id="menu" class="context-menu" hidden></div>
+
+    <script>
+      /*__INTELLIJ_BRIDGE__*/
+      /*__INITIAL_WORKBOOK__*/
+      /*__INITIAL_EDITABLE__*/
+      /*__INITIAL_THEME__*/
+
+      const gridElement = document.getElementById("grid");
+      const tabsElement = document.getElementById("tabs");
+      const menuElement = document.getElementById("menu");
+      const saveButton = document.getElementById("saveButton");
+      const restoreButton = document.getElementById("restoreButton");
+      let workbook = window.initialWorkbook || { sheets: [] };
+      let editable = Boolean(window.initialEditable);
+      let activeSheetIndex = 0;
+      let gridApi = null;
+
+      const send = (message) => {
+        if (window.intellijBridge) {
+          window.intellijBridge(message);
+        }
+      };
+
+      window.applyIntellijTheme = (theme) => {
+        if (!theme) {
+          return;
+        }
+
+        const root = document.documentElement;
+        Object.entries(theme).forEach(([key, value]) => {
+          const cssName = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+          root.style.setProperty(`--ij-${cssName}`, value);
+        });
+      };
+
+      window.setDirtyState = (nextDirty) => {
+        const dirty = Boolean(nextDirty);
+        saveButton.disabled = !dirty || !editable;
+        restoreButton.disabled = !dirty;
+      };
+
+      window.loadWorkbook = (nextWorkbook, nextEditable) => {
+        workbook = nextWorkbook || { sheets: [] };
+        editable = Boolean(nextEditable);
+        activeSheetIndex = Math.min(activeSheetIndex, Math.max(workbook.sheets.length - 1, 0));
+        window.setDirtyState(false);
+        renderTabs();
+        renderGrid();
+      };
+
+      function activeSheet() {
+        return workbook.sheets[activeSheetIndex] || null;
+      }
+
+      function renderTabs() {
+        tabsElement.replaceChildren();
+        workbook.sheets.forEach((sheet, index) => {
+          const tab = document.createElement("button");
+          tab.type = "button";
+          tab.className = `sheet-tab${index === activeSheetIndex ? " active" : ""}`;
+          tab.textContent = sheet.name;
+          tab.title = sheet.name;
+          tab.addEventListener("click", () => {
+            activeSheetIndex = index;
+            renderTabs();
+            renderGrid();
+          });
+          tabsElement.appendChild(tab);
+        });
+      }
+
+      function renderGrid() {
+        hideMenu();
+        const sheet = activeSheet();
+        if (!sheet) {
+          gridElement.className = "empty-state";
+          gridElement.textContent = "No sheets";
+          return;
+        }
+
+        gridElement.className = "ag-theme-quartz";
+        gridElement.textContent = "";
+
+        const columnDefs = sheet.columns.map((column) => ({
+          colId: column.field,
+          field: column.field,
+          headerName: column.headerName,
+          editable,
+          minWidth: 120,
+          cellDataType: false,
+          valueGetter: (params) => params.data.values[column.field] || "",
+          valueSetter: (params) => {
+            const nextValue = String(params.newValue ?? "");
+            const previousValue = params.data.values[column.field] || "";
+            if (nextValue === previousValue) {
+              return false;
+            }
+
+            params.data.values[column.field] = nextValue;
+            send({
+              action: "cellChanged",
+              sheetIndex: sheet.index,
+              rowIndex: params.data.rowIndex,
+              columnIndex: column.index,
+              value: nextValue,
+            });
+            return true;
+          },
+        }));
+
+        const gridOptions = {
+          columnDefs,
+          rowData: sheet.rows,
+          defaultColDef: {
+            resizable: true,
+            sortable: true,
+            filter: true,
+          },
+          rowNumbers: true,
+          suppressMenuHide: false,
+          singleClickEdit: true,
+          stopEditingWhenCellsLoseFocus: true,
+          suppressMovableColumns: false,
+          onCellContextMenu: showRowMenu,
+          onGridReady: (event) => event.api.sizeColumnsToFit(),
+          onCellValueChanged: () => window.setDirtyState(true),
+        };
+
+        if (gridApi) {
+          gridApi.destroy();
+        }
+        gridApi = agGrid.createGrid(gridElement, gridOptions);
+      }
+
+      function showRowMenu(params) {
+        if (!editable || !params.data || params.data.rowIndex === undefined) {
+          return;
+        }
+
+        const sheet = activeSheet();
+        if (!sheet) {
+          return;
+        }
+
+        const rowIndex = params.data.rowIndex;
+        params.event.preventDefault();
+        showMenu(params.event.clientX, params.event.clientY, [
+          ["Insert Row Above", () => sendAndDirty({ action: "insertRow", sheetIndex: sheet.index, rowIndex })],
+          ["Insert Row Below", () => sendAndDirty({ action: "insertRow", sheetIndex: sheet.index, rowIndex: rowIndex + 1 })],
+          ["Delete Row", () => sendAndDirty({ action: "deleteRow", sheetIndex: sheet.index, rowIndex })],
+        ]);
+      }
+
+      function showColumnMenu(event, field) {
+        if (!editable) {
+          return;
+        }
+
+        const sheet = activeSheet();
+        const column = sheet.columns.find((candidate) => candidate.field === field);
+        if (!column) {
+          return;
+        }
+
+        event.preventDefault();
+        showMenu(event.clientX, event.clientY, [
+          ["Insert Column Left", () => sendAndDirty({ action: "insertColumn", sheetIndex: sheet.index, columnIndex: column.index })],
+          ["Insert Column Right", () => sendAndDirty({ action: "insertColumn", sheetIndex: sheet.index, columnIndex: column.index + 1 })],
+          ["Delete Column", () => sendAndDirty({ action: "deleteColumn", sheetIndex: sheet.index, columnIndex: column.index })],
+        ]);
+      }
+
+      gridElement.addEventListener("contextmenu", (event) => {
+        const header = event.target.closest(".ag-header-cell[col-id]");
+        const field = header?.getAttribute("col-id");
+        if (!field || !editable) {
+          return;
+        }
+
+        showColumnMenu(event, field);
+      });
+
+      function sendAndDirty(message) {
+        send(message);
+        window.setDirtyState(true);
+        hideMenu();
+      }
+
+      function showMenu(x, y, items) {
+        menuElement.replaceChildren();
+        items.forEach(([label, action]) => {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.textContent = label;
+          item.addEventListener("click", action);
+          menuElement.appendChild(item);
+        });
+        menuElement.hidden = false;
+        menuElement.style.left = `${x}px`;
+        menuElement.style.top = `${y}px`;
+      }
+
+      function hideMenu() {
+        menuElement.hidden = true;
+      }
+
+      document.addEventListener("click", hideMenu);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          hideMenu();
+        }
+      });
+      saveButton.addEventListener("click", () => send({ action: "save" }));
+      restoreButton.addEventListener("click", () => send({ action: "restore" }));
+
+      window.applyIntellijTheme(window.initialTheme);
+      window.loadWorkbook(workbook, editable);
+    </script>
+  </body>
+</html>
